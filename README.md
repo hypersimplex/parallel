@@ -1,2 +1,2 @@
 # parallel
-concurrency data structures
+data structures for working with parallel stateful stores
