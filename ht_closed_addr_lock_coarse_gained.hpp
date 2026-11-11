@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -15,6 +14,8 @@
 #include <random>
 #include <utility>
 #include <vector>
+
+#include "common.hpp"
 
 /// node type for keeping track of items in a bucket
 template <class TyV>
@@ -56,115 +57,14 @@ struct Node {
 
 template <class TyV>
   requires std::movable<TyV>
-class Bucket;
-
-template <class TyV>
-  requires std::movable<TyV>
-class LockGuard;
-
-/// provide accessor methods when the bucket is owned
-template <class TyV>
-  requires std::movable<TyV>
 class OwnedBucket {
 public:
-  // disallow copying
+  // disallow copying or moving for simplicity
   OwnedBucket(OwnedBucket<TyV> const &) = delete;
   OwnedBucket &operator=(OwnedBucket<TyV> const &) = delete;
+  OwnedBucket(OwnedBucket<TyV> &&other) = delete;
+  OwnedBucket &operator=(OwnedBucket<TyV> &&other) = delete;
 
-  void set_migrated() { return bucket->set_migrated(); }
-  bool is_migrated() const { return bucket->is_migrated(); }
-  bool insert(uint64_t k, TyV &&v) { return bucket->insert(k, std::move(v)); }
-  std::optional<TyV> erase(uint64_t k) { return bucket->erase(k); }
-  Node<TyV> *find(uint64_t k) { return bucket->find(k); }
-  Node<TyV> *get_head() { return bucket->get_head(); }
-
-private:
-  OwnedBucket(Bucket<TyV> *b) : bucket(b) {}
-
-  OwnedBucket(OwnedBucket<TyV> &&) = default;
-  OwnedBucket &operator=(OwnedBucket<TyV> &&) = default;
-
-  Bucket<TyV> *bucket;
-
-  // only allow this class to use move constructor/assignment and construct this
-  // class
-  friend class LockGuard<TyV>;
-};
-
-/// a type to indicate that we have ownership of the bucket
-/// and it automatically releases ownership when done;
-///
-/// use dereference to accessing the wrapped bucket via a OwnedBucket
-template <class TyV>
-  requires std::movable<TyV>
-class LockGuard {
-public:
-  // invariant on construction: assumed that bucket's mtx has been acquired with
-  // lk_
-  LockGuard(std::shared_ptr<Bucket<TyV>> b, std::unique_lock<std::mutex> &&lk_)
-      : bucket(b), bucket_owned(b.get()), lk(std::move(lk_)) {}
-
-  LockGuard(LockGuard const &) = delete;
-  LockGuard &operator=(LockGuard const &) = delete;
-
-  // moves are totally valid
-  LockGuard(LockGuard &&) = default;
-  LockGuard &operator=(LockGuard &&) = default;
-
-  ~LockGuard() = default;
-
-  OwnedBucket<TyV> &operator*() {
-    assert(bucket); // sanity check: this should not be called on default
-                    // constructed LockGuard
-
-    return bucket_owned;
-  }
-
-private:
-  std::shared_ptr<Bucket<TyV>> bucket;
-  OwnedBucket<TyV> bucket_owned;
-  std::unique_lock<std::mutex> lk;
-};
-
-template <class TyV>
-  requires std::movable<TyV>
-class Bucket : public std::enable_shared_from_this<Bucket<TyV>> {
-public:
-  // not movable and not copyable; this is required since it is composed of a
-  // mutex
-  Bucket(Bucket const &) = delete;
-  Bucket &operator=(Bucket const &) = delete;
-  Bucket(Bucket &&) = delete;
-  Bucket &operator=(Bucket &&) = delete;
-
-  Bucket() {
-    migrated = false;
-    head = new Node<TyV>;
-  }
-
-  ~Bucket() {
-    auto node = head;
-    while (node) {
-      auto next = node->next;
-      delete node;
-      node = next;
-    }
-  }
-
-  LockGuard<TyV> lock() {
-    std::unique_lock<std::mutex> lk(mtx);
-    return LockGuard(this->shared_from_this(), std::move(lk));
-  }
-
-  std::optional<LockGuard<TyV>> try_lock() {
-    std::unique_lock<std::mutex> lk(mtx, std::defer_lock);
-    if (lk.try_lock()) {
-      return LockGuard(this->shared_from_this(), std::move(lk));
-    }
-    return std::nullopt;
-  }
-
-private:
   // signal there exists a more up-to-date bucket than the current bucket
   void set_migrated() { migrated = true; }
 
@@ -201,18 +101,31 @@ private:
 
   Node<TyV> *get_head() { return head; }
 
+  OwnedBucket() {
+    migrated = false;
+    head = new Node<TyV>;
+  }
+
+  ~OwnedBucket() {
+    if (!head) {
+      return;
+    }
+    auto node = head;
+    while (node) {
+      auto next = node->next;
+      delete node;
+      node = next;
+    }
+  }
+
+private:
   // sentinil head node always exist for ease of node list manipulation
   Node<TyV> *head;
-
-  std::mutex mtx;
 
   // a mark indicating that threads are looking at an old bucket
   // and that threads need to retry and obtain an more up-to-date
   // bucket
   bool migrated;
-
-  // let this type have special access due to ownership
-  friend class OwnedBucket<TyV>;
 };
 
 // open address table with linked list chain for each slot in the hash table
@@ -230,11 +143,12 @@ public:
     resizing = false;
     sz_total = 0;
     sz_buckets = num_buckets;
-    auto buckets_shared =
-        std::make_shared<std::vector<std::shared_ptr<Bucket<TyV>>>>();
+    auto buckets_shared = std::make_shared<
+        std::vector<std::shared_ptr<MutexWrapper<OwnedBucket<TyV>>>>>();
     for (int i = 0; i < sz_buckets; ++i) {
       // initialize bucket with a head node
-      buckets_shared->emplace_back(std::make_shared<Bucket<TyV>>());
+      buckets_shared->emplace_back(
+          std::make_shared<MutexWrapper<OwnedBucket<TyV>>>());
     }
     buckets.store(buckets_shared);
   }
@@ -255,11 +169,11 @@ public:
         if (!maybe_guard) {
           continue;
         }
-        auto &bucket = *maybe_guard.value();
-        if (bucket.is_migrated()) {
+        auto &guard = maybe_guard.value();
+        if (guard->is_migrated()) {
           continue;
         }
-        new_insert = bucket.insert(key, std::move(val));
+        new_insert = guard->insert(key, std::move(val));
       }
       if (new_insert) {
         sz_total.fetch_add(1, std::memory_order_relaxed);
@@ -282,11 +196,11 @@ public:
       if (!maybe_guard) {
         continue;
       }
-      auto &bucket = *maybe_guard.value();
-      if (bucket.is_migrated()) {
+      auto &guard = maybe_guard.value();
+      if (guard->is_migrated()) {
         continue;
       }
-      auto node = bucket.find(key);
+      auto node = guard->find(key);
       if (!node) {
         return std::nullopt;
       }
@@ -306,11 +220,11 @@ public:
       if (!maybe_guard) {
         continue;
       }
-      auto &bucket = *maybe_guard.value();
-      if (bucket.is_migrated()) {
+      auto &guard = maybe_guard.value();
+      if (guard->is_migrated()) {
         continue;
       }
-      auto node = bucket.find(key);
+      auto node = guard->find(key);
       return node != nullptr;
     }
   }
@@ -329,11 +243,11 @@ public:
         if (!maybe_guard) {
           continue;
         }
-        auto &bucket = *maybe_guard.value();
-        if (bucket.is_migrated()) {
+        auto &guard = maybe_guard.value();
+        if (guard->is_migrated()) {
           continue;
         }
-        ret = std::move(bucket.erase(key));
+        ret = std::move(guard->erase(key));
       }
       if (ret) {
         sz_total.fetch_sub(1, std::memory_order_relaxed);
@@ -373,14 +287,15 @@ private:
 
       // resize
 
-      std::vector<std::shared_ptr<Bucket<TyV>>> new_buckets;
+      std::vector<std::shared_ptr<MutexWrapper<OwnedBucket<TyV>>>> new_buckets;
       for (int i = 0; i < sz_buckets_new; ++i) {
-        new_buckets.push_back(std::make_shared<Bucket<TyV>>());
+        new_buckets.push_back(
+            std::make_shared<MutexWrapper<OwnedBucket<TyV>>>());
       }
 
       {
         // obtain locks to all existing buckets
-        std::vector<LockGuard<TyV>> locked_guards;
+        std::vector<LockGuard<OwnedBucket<TyV>>> locked_guards;
 
         auto cur_buckets = buckets.load();
         for (auto &bucket : *cur_buckets) {
@@ -388,14 +303,12 @@ private:
         }
 
         for (auto &guard : locked_guards) {
-          auto &bucket = *guard;
-          auto node = bucket.get_head()->next;
+          auto node = guard->get_head()->next;
           while (node) {
             std::hash<uint64_t> h{};
             uint64_t idx = h(node->key) % sz_buckets_new;
             {
-              (*new_buckets[idx]->lock())
-                  .insert(node->key, std::move(node->val));
+              new_buckets[idx]->lock()->insert(node->key, std::move(node->val));
             }
             node = node->next;
           }
@@ -409,8 +322,7 @@ private:
 
         // signal to threads working on old buckets to retry
         for (auto &guard : locked_guards) {
-          auto &bucket = *guard;
-          bucket.set_migrated();
+          guard->set_migrated();
         }
 
         // unlocked existing buckets when locked_guards are dropped
@@ -439,7 +351,9 @@ private:
   }
 
   std::optional<size_t> hash_to_bucket_idx(
-      std::shared_ptr<std::vector<std::shared_ptr<Bucket<TyV>>>> cur_buckets,
+      std::shared_ptr<
+          std::vector<std::shared_ptr<MutexWrapper<OwnedBucket<TyV>>>>>
+          cur_buckets,
       uint64_t const &key) {
     if (resizing.load(std::memory_order_acquire)) {
       return std::nullopt;
@@ -462,6 +376,7 @@ private:
   //
   // in practice, it seems most compiler implementation uses a mutex under the
   // hood
-  std::atomic<std::shared_ptr<std::vector<std::shared_ptr<Bucket<TyV>>>>>
+  std::atomic<std::shared_ptr<
+      std::vector<std::shared_ptr<MutexWrapper<OwnedBucket<TyV>>>>>>
       buckets;
 };
