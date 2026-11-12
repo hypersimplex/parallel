@@ -19,27 +19,26 @@
 
 #include "common.hpp"
 
-template <class Ty> class Node;
-
-template <class Ty> using ProtectedNode = MutexWrapper<Node<Ty>>;
-
-// additional requirement: Ty is default constructible
-template <class Ty> class Node {
-public:
-  Node(auto &&...arg)
-      : next(nullptr), val(std::forward<decltype(arg)>(arg)...) {}
-  std::shared_ptr<ProtectedNode<Ty>> next;
-  Ty val;
-};
-
 template <class Ty>
   requires std::movable<Ty> && std::totally_ordered<Ty> &&
            std::default_initializable<Ty>
 class ListSet {
+  class Node;
+
+  using ProtectedNode = MutexWrapper<Node>;
+
+  class Node {
+  public:
+    Node(auto &&...arg)
+        : next(nullptr), val(std::forward<decltype(arg)>(arg)...) {}
+    std::shared_ptr<ProtectedNode> next;
+    Ty val;
+  };
+
 public:
   ListSet() {
     // sentinil node; requires Ty to be default constructible
-    head = std::make_shared<ProtectedNode<Ty>>();
+    head = std::make_shared<ProtectedNode>();
   }
   // return true if added
   // return false if it exists and no modification is done
@@ -58,7 +57,7 @@ public:
       // does not exist; add new node in between prev and cur (possibly null for
       // tail)
 
-      auto new_node = std::make_shared<ProtectedNode<Ty>>(std::move(item));
+      auto new_node = std::make_shared<ProtectedNode>(std::move(item));
       auto guard = new_node->lock();
 
       raw_ptr_prev->next = new_node;
@@ -112,13 +111,13 @@ private:
   // return (prev_node, node)
   bool find(
       Ty const &item,
-      std::function<bool(
-          std::pair<std::shared_ptr<ProtectedNode<Ty>>, Node<Ty> *> prev,
-          std::pair<std::shared_ptr<ProtectedNode<Ty>>, Node<Ty> *> cur)> &&f) {
+      std::function<bool(std::pair<std::shared_ptr<ProtectedNode>, Node *> prev,
+                         std::pair<std::shared_ptr<ProtectedNode>, Node *> cur)>
+          &&f) {
     // keep 2 adjacent locks as we move through the linked list
     auto prev = head;
     auto guard_prev = prev->lock();
-    Node<Ty> *prev_node = guard_prev.operator->();
+    Node *prev_node = guard_prev.operator->();
 
     auto cur = guard_prev->next;
 
@@ -126,7 +125,7 @@ private:
       // obtain next node's lock
       auto guard_cur = cur->lock();
 
-      Node<Ty> *cur_node = guard_cur.operator->();
+      Node *cur_node = guard_cur.operator->();
 
       if (cur_node->val >= item) {
         return f({prev, prev_node}, {cur, cur_node});
@@ -146,5 +145,5 @@ private:
   }
 
   // internally keep an ordering (<=) wrt. Ty
-  std::shared_ptr<ProtectedNode<Ty>> head;
+  std::shared_ptr<ProtectedNode> head;
 };
