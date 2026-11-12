@@ -22,8 +22,15 @@ public:
   LockGuard &operator=(LockGuard const &) = delete;
 
   // moves are totally valid
-  LockGuard(LockGuard &&) = default;
-  LockGuard &operator=(LockGuard &&) = default;
+  LockGuard(LockGuard &&other) {
+    lk = std::move(other.lk);
+    mtx_wrapper = std::move(other.mtx_wrapper);
+  }
+  LockGuard &operator=(LockGuard &&other) {
+    lk = std::move(other.lk);
+    mtx_wrapper = std::move(other.mtx_wrapper);
+    return *this;
+  }
 
   ~LockGuard() = default;
 
