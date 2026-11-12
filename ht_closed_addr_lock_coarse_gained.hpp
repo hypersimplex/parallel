@@ -17,122 +17,121 @@
 
 #include "common.hpp"
 
-/// node type for keeping track of items in a bucket
-template <class TyV>
-  requires std::movable<TyV>
-struct Node {
-  uint64_t key;
-  TyV val;
-  Node *prev = nullptr;
-  Node *next = nullptr;
-
-  static Node *list_find(Node *node, uint64_t const k) {
-    while (node) {
-      if (k == node->key) {
-        return node;
-      }
-      node = node->next;
-    }
-    return nullptr;
-  }
-
-  static void list_insert_after(Node *insertion_point, Node *node) {
-    if (insertion_point->next) {
-      insertion_point->next->prev = node;
-    }
-    node->next = insertion_point->next;
-    node->prev = insertion_point;
-
-    insertion_point->next = node;
-  }
-
-  // assumes node->prev always exists
-  static void list_unlink(Node *node) {
-    node->prev->next = node->next;
-    if (node->next) {
-      node->next->prev = node->prev;
-    }
-  }
-};
-
-template <class TyV>
-  requires std::movable<TyV>
-class OwnedBucket {
-public:
-  // disallow copying or moving for simplicity
-  OwnedBucket(OwnedBucket<TyV> const &) = delete;
-  OwnedBucket &operator=(OwnedBucket<TyV> const &) = delete;
-  OwnedBucket(OwnedBucket<TyV> &&other) = delete;
-  OwnedBucket &operator=(OwnedBucket<TyV> &&other) = delete;
-
-  // signal there exists a more up-to-date bucket than the current bucket
-  void set_migrated() { migrated = true; }
-
-  bool is_migrated() const { return migrated; }
-
-  // return true if new item is added
-  // return false if existing item is modified or no bucket exists
-  bool insert(uint64_t k, TyV &&v) {
-    auto *node = find(k);
-    if (node) {
-      node->val = std::move(v);
-      return false;
-    }
-    auto new_node = new Node<TyV>;
-    new_node->val = std::move(v);
-    new_node->key = k;
-    Node<TyV>::list_insert_after(head, new_node);
-    return true;
-  }
-
-  // return erased value if it exists
-  std::optional<TyV> erase(uint64_t k) {
-    auto *node = find(k);
-    if (!node) {
-      return std::nullopt;
-    }
-    Node<TyV>::list_unlink(node);
-    auto ret = std::move(node->val);
-    delete node;
-    return std::optional<TyV>{std::in_place, std::move(ret)};
-  }
-
-  Node<TyV> *find(uint64_t k) { return Node<TyV>::list_find(head->next, k); }
-
-  Node<TyV> *get_head() { return head; }
-
-  OwnedBucket() {
-    migrated = false;
-    head = new Node<TyV>;
-  }
-
-  ~OwnedBucket() {
-    if (!head) {
-      return;
-    }
-    auto node = head;
-    while (node) {
-      auto next = node->next;
-      delete node;
-      node = next;
-    }
-  }
-
-private:
-  // sentinil head node always exist for ease of node list manipulation
-  Node<TyV> *head;
-
-  // a mark indicating that threads are looking at an old bucket
-  // and that threads need to retry and obtain an more up-to-date
-  // bucket
-  bool migrated;
-};
-
 // open address table with linked list chain for each slot in the hash table
 // along with a lock per bucket
 template <class TyV>
   requires std::movable<TyV>
 class HashTable {
+
+  // internal constructs
+
+  /// node type for keeping track of items in a bucket
+  struct Node {
+    uint64_t key;
+    TyV val;
+    Node *prev = nullptr;
+    Node *next = nullptr;
+
+    static Node *list_find(Node *node, uint64_t const k) {
+      while (node) {
+        if (k == node->key) {
+          return node;
+        }
+        node = node->next;
+      }
+      return nullptr;
+    }
+
+    static void list_insert_after(Node *insertion_point, Node *node) {
+      if (insertion_point->next) {
+        insertion_point->next->prev = node;
+      }
+      node->next = insertion_point->next;
+      node->prev = insertion_point;
+
+      insertion_point->next = node;
+    }
+
+    // assumes node->prev always exists
+    static void list_unlink(Node *node) {
+      node->prev->next = node->next;
+      if (node->next) {
+        node->next->prev = node->prev;
+      }
+    }
+  };
+
+  class OwnedBucket {
+  public:
+    // disallow copying or moving for simplicity
+    OwnedBucket(OwnedBucket const &) = delete;
+    OwnedBucket &operator=(OwnedBucket const &) = delete;
+    OwnedBucket(OwnedBucket &&other) = delete;
+    OwnedBucket &operator=(OwnedBucket &&other) = delete;
+
+    // signal there exists a more up-to-date bucket than the current bucket
+    void set_migrated() { migrated = true; }
+
+    bool is_migrated() const { return migrated; }
+
+    // return true if new item is added
+    // return false if existing item is modified or no bucket exists
+    bool insert(uint64_t k, TyV &&v) {
+      auto *node = find(k);
+      if (node) {
+        node->val = std::move(v);
+        return false;
+      }
+      auto new_node = new Node;
+      new_node->val = std::move(v);
+      new_node->key = k;
+      Node::list_insert_after(head, new_node);
+      return true;
+    }
+
+    // return erased value if it exists
+    std::optional<TyV> erase(uint64_t k) {
+      auto *node = find(k);
+      if (!node) {
+        return std::nullopt;
+      }
+      Node::list_unlink(node);
+      auto ret = std::move(node->val);
+      delete node;
+      return std::optional<TyV>{std::in_place, std::move(ret)};
+    }
+
+    Node *find(uint64_t k) { return Node::list_find(head->next, k); }
+
+    Node *get_head() { return head; }
+
+    OwnedBucket() {
+      migrated = false;
+      head = new Node;
+    }
+
+    ~OwnedBucket() {
+      if (!head) {
+        return;
+      }
+      auto node = head;
+      while (node) {
+        auto next = node->next;
+        delete node;
+        node = next;
+      }
+    }
+
+  private:
+    // sentinil head node always exist for ease of node list manipulation
+    Node *head;
+
+    // a mark indicating that threads are looking at an old bucket
+    // and that threads need to retry and obtain an more up-to-date
+    // bucket
+    bool migrated;
+  };
+
 public:
   HashTable(HashTable const &) = delete;
   HashTable &operator=(HashTable const &) = delete;
@@ -144,11 +143,11 @@ public:
     sz_total = 0;
     sz_buckets = num_buckets;
     auto buckets_shared = std::make_shared<
-        std::vector<std::shared_ptr<MutexWrapper<OwnedBucket<TyV>>>>>();
+        std::vector<std::shared_ptr<MutexWrapper<OwnedBucket>>>>();
     for (int i = 0; i < sz_buckets; ++i) {
       // initialize bucket with a head node
       buckets_shared->emplace_back(
-          std::make_shared<MutexWrapper<OwnedBucket<TyV>>>());
+          std::make_shared<MutexWrapper<OwnedBucket>>());
     }
     buckets.store(buckets_shared);
   }
@@ -287,15 +286,14 @@ private:
 
       // resize
 
-      std::vector<std::shared_ptr<MutexWrapper<OwnedBucket<TyV>>>> new_buckets;
+      std::vector<std::shared_ptr<MutexWrapper<OwnedBucket>>> new_buckets;
       for (int i = 0; i < sz_buckets_new; ++i) {
-        new_buckets.push_back(
-            std::make_shared<MutexWrapper<OwnedBucket<TyV>>>());
+        new_buckets.push_back(std::make_shared<MutexWrapper<OwnedBucket>>());
       }
 
       {
         // obtain locks to all existing buckets
-        std::vector<LockGuard<OwnedBucket<TyV>>> locked_guards;
+        std::vector<LockGuard<OwnedBucket>> locked_guards;
 
         auto cur_buckets = buckets.load();
         for (auto &bucket : *cur_buckets) {
@@ -351,8 +349,7 @@ private:
   }
 
   std::optional<size_t> hash_to_bucket_idx(
-      std::shared_ptr<
-          std::vector<std::shared_ptr<MutexWrapper<OwnedBucket<TyV>>>>>
+      std::shared_ptr<std::vector<std::shared_ptr<MutexWrapper<OwnedBucket>>>>
           cur_buckets,
       uint64_t const &key) {
     if (resizing.load(std::memory_order_acquire)) {
@@ -376,7 +373,7 @@ private:
   //
   // in practice, it seems most compiler implementation uses a mutex under the
   // hood
-  std::atomic<std::shared_ptr<
-      std::vector<std::shared_ptr<MutexWrapper<OwnedBucket<TyV>>>>>>
+  std::atomic<
+      std::shared_ptr<std::vector<std::shared_ptr<MutexWrapper<OwnedBucket>>>>>
       buckets;
 };
