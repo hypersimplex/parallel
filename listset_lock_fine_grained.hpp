@@ -40,6 +40,13 @@ public:
     // sentinil node; requires Ty to be default constructible
     head = std::make_shared<ProtectedNode>();
   }
+
+  // make this simple and explicit for safety
+  ListSet(ListSet const &) = delete;
+  ListSet &operator=(ListSet const &) = delete;
+  ListSet(ListSet &&) = delete;
+  ListSet &operator=(ListSet &&) = delete;
+
   // return true if added
   // return false if it exists and no modification is done
   bool add(Ty &&item) {
