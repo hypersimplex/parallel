@@ -77,3 +77,6 @@ listset-tsan tsan-listset:
 
 clean:
 	rm -f *.o
+
+temp:
+	$(CXX) $(DEBUG_FLAGS) test_listset_lockfree.cpp -o test_listset_lockfree.o
