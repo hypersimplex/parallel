@@ -10,7 +10,7 @@ template <class TyInner> class MutexWrapper;
 /// a type to indicate that we have ownership of the wrapped item
 /// and it automatically releases ownership when done;
 ///
-/// use dereference to accessing the wrapped item
+/// use ->/arrow to accessing the wrapped item
 template <class TyInner> class LockGuard {
 public:
   // invariant on construction: assumed that bucket's mtx has been acquired with
