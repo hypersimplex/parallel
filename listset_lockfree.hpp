@@ -147,7 +147,9 @@ public:
                                                  std::memory_order_acq_rel,
                                                  std::memory_order_relaxed)) {
             // success
-            // todo: defer physical deletion of cur until it is safe
+            // [wip/todo]: defer physical deletion of cur until it is safe;
+            // eg: need to add cur to a container and use quiescent state
+            // reclaimation to recycle memory
             cur = next;
             continue;
           } else {
