@@ -21,9 +21,17 @@ LIST_BIN  = test_listset_lock_fine_grained.o
 LIST_ASAN = test_listset_lock_fine_grained_asan.o
 LIST_TSAN = test_listset_lock_fine_grained_tsan.o
 
+# 3. Lock-Free List Set
+LIST_LF_SRC  = test_listset_lockfree.cpp
+LIST_LF_BIN  = test_listset_lockfree.o
+LIST_LF_ASAN = test_listset_lockfree_asan.o
+LIST_LF_TSAN = test_listset_lockfree_tsan.o
+
 .PHONY: all test asan tsan clean \
         ht ht-test ht-asan ht-tsan test-ht asan-ht tsan-ht \
-        listset listset-test listset-asan listset-tsan test-listset asan-listset tsan-listset
+        listset listset-test listset-asan listset-tsan test-listset asan-listset tsan-listset \
+        listset-lockfree listset-lockfree-test listset-lockfree-asan listset-lockfree-tsan \
+        test-listset-lockfree asan-listset-lockfree tsan-listset-lockfree
 
 # ============================================================================
 # Global Test Rules (All Implementations)
@@ -31,9 +39,9 @@ LIST_TSAN = test_listset_lock_fine_grained_tsan.o
 
 all: test asan tsan
 
-test: ht-test listset-test
-asan: ht-asan listset-asan
-tsan: ht-tsan listset-tsan
+test: ht-test listset-test listset-lockfree-test
+asan: ht-asan listset-asan listset-lockfree-asan
+tsan: ht-tsan listset-tsan listset-lockfree-tsan
 
 # ============================================================================
 # Selective Rules: Hash Table (ht_closed_addr_lock_coarse_gained)
@@ -72,11 +80,26 @@ listset-tsan tsan-listset:
 	$(TSAN_ENV) ./$(LIST_TSAN)
 
 # ============================================================================
+# Selective Rules: Lock-Free List Set (listset_lockfree)
+# ============================================================================
+
+listset-lockfree: listset-lockfree-test listset-lockfree-asan listset-lockfree-tsan
+
+listset-lockfree-test test-listset-lockfree:
+	$(CXX) $(DEBUG_FLAGS) $(LIST_LF_SRC) -o $(LIST_LF_BIN)
+	./$(LIST_LF_BIN)
+
+listset-lockfree-asan asan-listset-lockfree:
+	$(CXX) $(ASAN_FLAGS) $(LIST_LF_SRC) -o $(LIST_LF_ASAN)
+	./$(LIST_LF_ASAN)
+
+listset-lockfree-tsan tsan-listset-lockfree:
+	$(CXX) $(TSAN_FLAGS) $(LIST_LF_SRC) -o $(LIST_LF_TSAN)
+	$(TSAN_ENV) ./$(LIST_LF_TSAN)
+
+# ============================================================================
 # Cleanup
 # ============================================================================
 
 clean:
 	rm -f *.o
-
-temp:
-	$(CXX) $(DEBUG_FLAGS) test_listset_lockfree.cpp -o test_listset_lockfree.o
